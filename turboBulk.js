@@ -106,7 +106,7 @@ const fs = require("fs");
     const allAudioFiles = fs.readdirSync(audiosDir);
     const audioFilesToTranscribe = allAudioFiles
       .filter((file) => !transcribedFiles.includes(file))
-      .slice(0, 10); // files that are not in transcribedFiles
+      .slice(0, 1); // files that are not in transcribedFiles
 
     if (audioFilesToTranscribe.length === 0) {
       console.log("No new audio files to transcribe.");
@@ -180,6 +180,79 @@ const fs = require("fs");
       transcribedFilesPath,
       audioFilesToTranscribe.join("\n") + "\n"
     );
+
+    const timeoutDuration = 7200 * 1000; // 2 hours in milliseconds
+    let lastChangeTime = Date.now(); // Track the last time a change occurred
+
+    // Start the MutationObserver to monitor UI changes
+    await page.evaluate(() => {
+      const observer = new MutationObserver(() => {
+        // Notify the Node.js context that a change has occurred
+        window.lastChangeDetected = true;
+      });
+
+      // Start observing the <tbody> element for child additions
+      const targetNode = document.querySelector("tbody");
+      if (targetNode) {
+        observer.observe(targetNode, { childList: true, subtree: true });
+      }
+    });
+
+    // Function to check for inactivity
+    const checkForInactivity = async () => {
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every second
+
+        // Check if enough time has passed without changes
+        if (Date.now() - lastChangeTime > timeoutDuration) {
+          throw new Error("No UI changes detected within the timeout period.");
+        }
+
+        // Reset the last change time if a change is detected
+        const changeDetected = await page.evaluate(
+          () => window.lastChangeDetected
+        );
+        if (changeDetected) {
+          lastChangeTime = Date.now();
+          await page.evaluate(() => {
+            window.lastChangeDetected = false; // Reset the flag
+          });
+        }
+      }
+    };
+
+    // Start the inactivity check in the background
+    checkForInactivity();
+
+    // Function to wait for SVGs with dynamic checking
+    const waitForSVGs = async (totalFiles) => {
+      const checkInterval = 5000; // Check every 5 seconds
+      let allSVGsFound = false;
+
+      while (!allSVGsFound) {
+        await new Promise((resolve) => setTimeout(resolve, checkInterval));
+
+        const rows = await page.evaluate(() => {
+          const rows = Array.from(document.querySelectorAll("tbody tr"));
+          return rows.map((row) => {
+            const svg = row.querySelector("td:nth-child(6) svg");
+            return svg && svg.outerHTML.includes("text-success");
+          });
+        });
+
+        const count = rows.filter(Boolean).length;
+
+        console.log(`Current SVG count: ${count}/${totalFiles}`); // Log current count
+        if (count === totalFiles) {
+          allSVGsFound = true; // Break the loop if all SVGs are found
+        }
+      }
+
+      console.log("All SVGs are found for the processed files."); // Log to Node.js console
+    };
+
+    // Call the wait function
+    await waitForSVGs(totalFiles);
 
     // await browser.close();
   } catch (error) {
