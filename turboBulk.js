@@ -90,15 +90,35 @@ const fs = require("fs");
     await page.select('select[name="language"]', "Urdu");
     console.log("Language selected: Urdu");
 
-    const audiosDir = path.join(__dirname, "audios");
-    const audioFiles = fs.readdirSync(audiosDir).slice(0, 10); // 50 files
+    const transcribedFilesPath = path.join(__dirname, "transcribedFiles.txt");
 
-    if (audioFiles.length === 0) {
+    // Read already transcribed files from .txt file
+    let transcribedFiles = [];
+    if (fs.existsSync(transcribedFilesPath)) {
+      transcribedFiles = fs
+        .readFileSync(transcribedFilesPath, "utf-8")
+        .split("\n")
+        .filter(Boolean);
+    }
+
+    // Fetch audio files and filter out already transcribed ones
+    const audiosDir = path.join(__dirname, "audios");
+    const allAudioFiles = fs.readdirSync(audiosDir);
+    const audioFilesToTranscribe = allAudioFiles
+      .filter((file) => !transcribedFiles.includes(file))
+      .slice(0, 10); // files that are not in transcribedFiles
+
+    if (audioFilesToTranscribe.length === 0) {
+      console.log("No new audio files to transcribe.");
+      return;
+    }
+
+    if (allAudioFiles.length === 0) {
       throw new Error("No audio files found in the 'audios' directory.");
     }
 
     // Iterate over each file and upload it sequentially
-    for (const file of audioFiles) {
+    for (const file of audioFilesToTranscribe) {
       const filePath = path.join(audiosDir, file);
       console.log(`Uploading file: ${filePath}`);
 
@@ -122,7 +142,7 @@ const fs = require("fs");
     }
 
     // Wait until all files have uploaded
-    const totalFiles = audioFiles.length;
+    const totalFiles = audioFilesToTranscribe.length;
 
     await page.waitForFunction(
       (totalFiles) => {
@@ -154,6 +174,12 @@ const fs = require("fs");
     // Now click the "Transcribe" button
     await page.click("button.dui-btn.dui-btn-primary.w-full"); // transcribe btn
     console.log("Clicked the 'Transcribe' button!");
+
+    // Append newly transcribed files to the .txt file
+    fs.appendFileSync(
+      transcribedFilesPath,
+      audioFilesToTranscribe.join("\n") + "\n"
+    );
 
     // await browser.close();
   } catch (error) {
