@@ -106,7 +106,7 @@ const fs = require("fs");
     const allAudioFiles = fs.readdirSync(audiosDir);
     const audioFilesToTranscribe = allAudioFiles
       .filter((file) => !transcribedFiles.includes(file))
-      .slice(0, 1); // files that are not in transcribedFiles
+      .slice(0, 50); // files that are not in transcribedFiles
 
     if (audioFilesToTranscribe.length === 0) {
       console.log("No new audio files to transcribe.");
@@ -181,6 +181,7 @@ const fs = require("fs");
       audioFilesToTranscribe.join("\n") + "\n"
     );
 
+    // check all files got transcribed
     const timeoutDuration = 7200 * 1000; // 2 hours in milliseconds
     let lastChangeTime = Date.now(); // Track the last time a change occurred
 
@@ -249,12 +250,86 @@ const fs = require("fs");
       }
 
       console.log("All SVGs are found for the processed files."); // Log to Node.js console
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Wait for the checkbox label, then check the checkbox
+      await page.evaluate(() => {
+        // Select the checkbox using its label
+        const checkbox = document.querySelector(
+          'thead th label input[type="checkbox"]'
+        );
+        if (checkbox && !checkbox.checked) {
+          checkbox.click(); // Check the checkbox if it's not already checked
+          console.log("checkbox clicked");
+        }
+      });
+
+      // Select all div elements with role="link"
+      const exportButton = await page.evaluateHandle(() => {
+        const linkElements = document.querySelectorAll('div[role="link"]');
+        let exportElement = null;
+
+        linkElements.forEach((element) => {
+          const span = element.querySelector("span");
+          if (span && span.textContent.includes("Export")) {
+            exportElement = element;
+          }
+        });
+
+        return exportElement; // Return the element to be clicked
+      });
+
+      // Check if the export button was found, then click
+      if (exportButton) {
+        console.log("Export button found.");
+        await exportButton.click();
+      } else {
+        console.log("Export button not found.");
+      }
+      await exportButton.dispose();
+
+      // Wait for the checkbox to be available in the DOM
+      const srtCheckbox = await page.waitForSelector(
+        'input[name="bool:srt?"]',
+        { visible: true }
+      );
+      // Check if the checkbox was found, then set it as checked inside the evaluate function
+      await page.evaluate((checkbox) => {
+        if (checkbox) {
+          checkbox.checked = true; // Select the checkbox
+          console.log("SRT Checkbox clicked");
+        }
+      }, srtCheckbox);
+
+      // download
+      await page.evaluate(async () => {
+        const elements = document.querySelectorAll(
+          "button.dui-btn.dui-btn-primary"
+        );
+        let downloadButton = null;
+        // Log each button's outerHTML and check for the "Download" button
+        elements.forEach((element) => {
+          if (element.textContent.includes("Download")) {
+            downloadButton = element;
+          }
+        });
+        // Check if we found the download button
+        if (downloadButton) {
+          console.log("Download button found:", downloadButton.outerHTML);
+          downloadButton.click();
+        } else {
+          console.log("Download button not found.");
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 10000)); // testing timeout for downloading
+      });
+      //
     };
 
     // Call the wait function
     await waitForSVGs(totalFiles);
 
-    // await browser.close();
+    await browser.close();
   } catch (error) {
     console.log(error);
   }
