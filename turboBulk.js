@@ -8,10 +8,16 @@ const fs = require("fs");
     // Launch a new browser instance
     const browser = await puppeteer.launch({
       headless: false, //  true if you don't want to see the browser
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     // Open a new browser page
     const page = await browser.newPage();
+
+    // Set a user agent to appear less like a bot
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36"
+    );
 
     // Navigate to the login page
     await page.goto("https://turboscribe.ai/login", {
@@ -83,7 +89,7 @@ const fs = require("fs");
 
     // Path setup for audios and transcribed files
     const transcribedFilesPath = path.join(__dirname, "transcribedFiles.txt");
-    const audiosDir = path.join(__dirname, "audios1");
+    const audiosDir = path.join(__dirname, "audios");
 
     // Read already transcribed files from .txt file
     let transcribedFiles = [];
@@ -98,7 +104,7 @@ const fs = require("fs");
     const allAudioFiles = fs.readdirSync(audiosDir);
     const audioFilesToTranscribe = allAudioFiles
       .filter((file) => !transcribedFiles.includes(file))
-      .slice(0, 103);
+      .slice(0, 50); // choose the number of files
 
     if (audioFilesToTranscribe.length === 0) {
       console.log("No new audio files to transcribe.");
@@ -109,7 +115,8 @@ const fs = require("fs");
       const filePath = path.join(audiosDir, file);
 
       // Open the popup
-      await page.click("span.dui-btn-primary");
+      const popupBtn = await page.waitForSelector("span.dui-btn-primary");
+      await popupBtn.click();
       console.log("Opened popup for file:", file);
 
       // Select "Urdu" from the dropdown
@@ -134,7 +141,7 @@ const fs = require("fs");
             document.querySelectorAll(".dz-preview.dz-file-preview").length
           );
         },
-        { timeout: 72000 }
+        { timeout: 7200000 } // for test
       );
 
       console.log("File fully uploaded and recognized:", file);
@@ -147,8 +154,6 @@ const fs = require("fs");
       // Click the "Transcribe" button
       await page.click("button.dui-btn.dui-btn-primary.w-full");
       console.log("Clicked 'Transcribe' button for file:", file);
-
-      await new Promise((resolve) => setTimeout(resolve, 4000)); // again open popup
     }
 
     console.log("All files uploaded and transcribed!");
