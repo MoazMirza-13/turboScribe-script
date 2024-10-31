@@ -40,54 +40,82 @@ const fs = require("fs");
     // Log a message after successful login
     console.log("Logged in successfully!");
 
-    // new folder
-    await page.evaluate(() => {
-      const items = Array.from(document.querySelectorAll("li"));
-      const newFolder = items.find(
-        (item) => item.textContent.trim() === "New Folder"
-      );
-      newFolder?.click();
-    });
+    // Check file count in transcribedFiles.txt
+    const transcribedFilePath = path.join(__dirname, "transcribedFiles.txt");
+    let fileCount = 0;
+    if (fs.existsSync(transcribedFilePath)) {
+      const transcribedData = fs.readFileSync(transcribedFilePath, "utf-8");
+      fileCount = transcribedData.split("\n").filter(Boolean).length;
+    }
+    console.log("File count: " + fileCount);
 
-    // Read and increment the folder number
-    const filePath = path.join(__dirname, "folderNumber.txt");
-    let folderNumber = 1;
-
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, "utf-8");
-      folderNumber = parseInt(data, 10) + 1; // Increment by 1
+    const previousFolderPath = path.join(__dirname, "previousFolder.txt");
+    // Check if previousFolder.txt exists and is empty
+    let previousFolderUrl = "";
+    if (fs.existsSync(previousFolderPath)) {
+      previousFolderUrl = fs.readFileSync(previousFolderPath, "utf-8").trim();
     }
 
-    // Wait for the popup to appear
-    await page.waitForSelector('input[name="name"]');
-    await page.type('input[name="name"]', folderNumber.toString());
+    // choose number of files after which a new folder will be created
+    if (fileCount % 1000 === 0 || !previousFolderUrl) {
+      console.log("creating a new folder...");
 
-    await page.evaluate(() => {
-      const elements = document.querySelectorAll(
-        "button.dui-btn.dui-btn-primary"
-      );
-      let button = null;
+      // Folder number logic
+      const folderFilePath = path.join(__dirname, "folderNumber.txt");
+      let folderNumber = 1;
 
-      elements.forEach((element) => {
-        if (element.textContent.includes("Create Folder")) {
-          button = element;
-        }
+      if (fs.existsSync(folderFilePath)) {
+        const data = fs.readFileSync(folderFilePath, "utf-8");
+        folderNumber = parseInt(data, 10) + 1; // Increment by 1
+      }
+
+      // Folder creation
+      await page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll("li"));
+        const newFolder = items.find(
+          (item) => item.textContent.trim() === "New Folder"
+        );
+        newFolder?.click();
       });
 
-      // Check if we found the Create Folder button
-      if (button) {
-        console.log("button found:", button.outerHTML);
-        button.click();
+      await page.waitForSelector('input[name="name"]');
+      await page.type('input[name="name"]', folderNumber.toString());
+
+      await page.evaluate(() => {
+        const elements = document.querySelectorAll(
+          "button.dui-btn.dui-btn-primary"
+        );
+        const button = Array.from(elements).find((element) =>
+          element.textContent.includes("Create Folder")
+        );
+        button?.click();
+      });
+
+      // Write the updated folder number back to folderNumber.txt
+      fs.writeFileSync(folderFilePath, folderNumber.toString(), "utf-8");
+      await page.waitForNavigation({ waitUntil: "networkidle2" });
+
+      // Get and save the new folder URL
+      const newFolderUrl = page.url();
+      fs.writeFileSync(
+        path.join(__dirname, "previousFolder.txt"),
+        newFolderUrl,
+        "utf-8"
+      );
+    } else {
+      // Navigate to previous folder URL if files are fewer
+      console.log("navigating to previous folder...");
+
+      if (fs.existsSync(previousFolderPath)) {
+        const previousFolderUrl = fs.readFileSync(previousFolderPath, "utf-8");
+        await page.goto(previousFolderUrl, { waitUntil: "networkidle2" });
+        console.log("Navigated to previous folder URL:", previousFolderUrl);
       } else {
-        console.log("button not found.");
+        console.log("No previous folder URL found.");
       }
-    });
+    }
 
-    // Write the updated folder number back to folderNumber.txt
-    fs.writeFileSync(filePath, folderNumber.toString(), "utf-8");
-    await page.waitForNavigation({ waitUntil: "networkidle2" });
-
-    // Path setup for audios and transcribed files
+    //  setup for audios and transcribed files
     const transcribedFilesPath = path.join(__dirname, "transcribedFiles.txt");
     const audiosDir = path.join(__dirname, "audios");
 
@@ -104,7 +132,7 @@ const fs = require("fs");
     const allAudioFiles = fs.readdirSync(audiosDir);
     const audioFilesToTranscribe = allAudioFiles
       .filter((file) => !transcribedFiles.includes(file))
-      .slice(0, 50); // choose the number of files
+      .slice(0, 1); // choose the number of files // testing only one file at a time
 
     if (audioFilesToTranscribe.length === 0) {
       console.log("No new audio files to transcribe.");
@@ -146,6 +174,7 @@ const fs = require("fs");
 
       console.log("File fully uploaded and recognized:", file);
 
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       // Scroll to the "Transcribe" button to ensure it’s visible
       await page.$eval("button.dui-btn.dui-btn-primary.w-full", (button) => {
         button.scrollIntoView();
@@ -158,7 +187,7 @@ const fs = require("fs");
 
     console.log("All files uploaded and transcribed!");
 
-    totalFiles = audioFilesToTranscribe.length;
+    await new Promise((resolve) => setTimeout(resolve, 5000)); // check
 
     // Append newly transcribed files to the .txt file
     fs.appendFileSync(
@@ -166,156 +195,161 @@ const fs = require("fs");
       audioFilesToTranscribe.join("\n") + "\n"
     );
 
-    // check all files got transcribed
-    const timeoutDuration = 7200 * 1000; // 2 hours in milliseconds
-    let lastChangeTime = Date.now(); // Track the last time a change occurred
+    // curretnly turboscribe is giving "Try again later"  // you can use this code if you want to download the uploaded files in bulk
 
-    // Start the MutationObserver to monitor UI changes
-    await page.evaluate(() => {
-      const observer = new MutationObserver(() => {
-        // Notify the Node.js context that a change has occurred
-        window.lastChangeDetected = true;
-      });
+    // to download all the uploaded files after they got transcribed
+    // // check all files got transcribed
+    // totalFiles = audioFilesToTranscribe.length;
+    // const timeoutDuration = 7200 * 1000; // 2 hours in milliseconds
+    // let lastChangeTime = Date.now(); // Track the last time a change occurred
 
-      // Start observing the <tbody> element for child additions
-      const targetNode = document.querySelector("tbody");
-      if (targetNode) {
-        observer.observe(targetNode, { childList: true, subtree: true });
-      }
-    });
+    // // Start the MutationObserver to monitor UI changes
+    // await page.evaluate(() => {
+    //   const observer = new MutationObserver(() => {
+    //     // Notify the Node.js context that a change has occurred
+    //     window.lastChangeDetected = true;
+    //   });
 
-    // Function to check for inactivity
-    const checkForInactivity = async () => {
-      while (true) {
-        await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every second
+    //   // Start observing the <tbody> element for child additions
+    //   const targetNode = document.querySelector("tbody");
+    //   if (targetNode) {
+    //     observer.observe(targetNode, { childList: true, subtree: true });
+    //   }
+    // });
 
-        // Check if enough time has passed without changes
-        if (Date.now() - lastChangeTime > timeoutDuration) {
-          throw new Error("No UI changes detected within the timeout period.");
-        }
+    // // Function to check for inactivity
+    // const checkForInactivity = async () => {
+    //   while (true) {
+    //     await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every second
 
-        // Reset the last change time if a change is detected
-        const changeDetected = await page.evaluate(
-          () => window.lastChangeDetected
-        );
-        if (changeDetected) {
-          lastChangeTime = Date.now();
-          await page.evaluate(() => {
-            window.lastChangeDetected = false; // Reset the flag
-          });
-        }
-      }
-    };
+    //     // Check if enough time has passed without changes
+    //     if (Date.now() - lastChangeTime > timeoutDuration) {
+    //       throw new Error("No UI changes detected within the timeout period.");
+    //     }
 
-    // Start the inactivity check in the background
-    checkForInactivity();
+    //     // Reset the last change time if a change is detected
+    //     const changeDetected = await page.evaluate(
+    //       () => window.lastChangeDetected
+    //     );
+    //     if (changeDetected) {
+    //       lastChangeTime = Date.now();
+    //       await page.evaluate(() => {
+    //         window.lastChangeDetected = false; // Reset the flag
+    //       });
+    //     }
+    //   }
+    // };
 
-    // Function to wait for SVGs with dynamic checking
-    const waitForSVGs = async (totalFiles) => {
-      const checkInterval = 5000; // Check every 5 seconds
-      let allSVGsFound = false;
+    // // Start the inactivity check in the background
+    // checkForInactivity();
 
-      while (!allSVGsFound) {
-        await new Promise((resolve) => setTimeout(resolve, checkInterval));
+    // // Function to wait for SVGs with dynamic checking
+    // const waitForSVGs = async (totalFiles) => {
+    //   const checkInterval = 5000; // Check every 5 seconds
+    //   let allSVGsFound = false;
 
-        const rows = await page.evaluate(() => {
-          const rows = Array.from(document.querySelectorAll("tbody tr"));
-          return rows.map((row) => {
-            const svg = row.querySelector("td:nth-child(6) svg");
-            return svg && svg.outerHTML.includes("text-success");
-          });
-        });
+    //   while (!allSVGsFound) {
+    //     await new Promise((resolve) => setTimeout(resolve, checkInterval));
 
-        const count = rows.filter(Boolean).length;
+    //     const rows = await page.evaluate(() => {
+    //       const rows = Array.from(document.querySelectorAll("tbody tr"));
+    //       return rows.map((row) => {
+    //         const svg = row.querySelector("td:nth-child(6) svg");
+    //         return svg && svg.outerHTML.includes("text-success");
+    //       });
+    //     });
 
-        console.log(`Current SVG count: ${count}/${totalFiles}`); // Log current count
-        if (count === totalFiles) {
-          allSVGsFound = true; // Break the loop if all SVGs are found
-        }
-      }
+    //     const count = rows.filter(Boolean).length;
 
-      console.log("All SVGs are found for the processed files."); // Log to Node.js console
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    //     console.log(`Current SVG count: ${count}/${totalFiles}`); // Log current count
+    //     if (count === totalFiles) {
+    //       allSVGsFound = true; // Break the loop if all SVGs are found
+    //     }
+    //   }
 
-      // Wait for the checkbox label, then check the checkbox
-      await page.evaluate(() => {
-        // Select the checkbox using its label
-        const checkbox = document.querySelector(
-          'thead th label input[type="checkbox"]'
-        );
-        if (checkbox && !checkbox.checked) {
-          checkbox.click(); // Check the checkbox if it's not already checked
-          console.log("checkbox clicked");
-        }
-      });
+    //   console.log("All SVGs are found for the processed files."); // Log to Node.js console
+    //   await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      // Select all div elements with role="link"
-      const exportButton = await page.evaluateHandle(() => {
-        const linkElements = document.querySelectorAll('div[role="link"]');
-        let exportElement = null;
+    //   // Wait for the checkbox label, then check the checkbox
+    //   await page.evaluate(() => {
+    //     // Select the checkbox using its label
+    //     const checkbox = document.querySelector(
+    //       'thead th label input[type="checkbox"]'
+    //     );
+    //     if (checkbox && !checkbox.checked) {
+    //       checkbox.click(); // Check the checkbox if it's not already checked
+    //       console.log("checkbox clicked");
+    //     }
+    //   });
 
-        linkElements.forEach((element) => {
-          const span = element.querySelector("span");
-          if (span && span.textContent.includes("Export")) {
-            exportElement = element;
-          }
-        });
+    //   // Select all div elements with role="link"
+    //   const exportButton = await page.evaluateHandle(() => {
+    //     const linkElements = document.querySelectorAll('div[role="link"]');
+    //     let exportElement = null;
 
-        return exportElement; // Return the element to be clicked
-      });
+    //     linkElements.forEach((element) => {
+    //       const span = element.querySelector("span");
+    //       if (span && span.textContent.includes("Export")) {
+    //         exportElement = element;
+    //       }
+    //     });
 
-      // Check if the export button was found, then click
-      if (exportButton) {
-        console.log("Export button found.");
-        await exportButton.click();
-      } else {
-        console.log("Export button not found.");
-      }
-      await exportButton.dispose();
+    //     return exportElement; // Return the element to be clicked
+    //   });
 
-      // Wait for the checkbox to be available in the DOM
-      const srtCheckbox = await page.waitForSelector(
-        'input[name="bool:srt?"]',
-        { visible: true }
-      );
-      // Check if the checkbox was found, then set it as checked inside the evaluate function
-      await page.evaluate((checkbox) => {
-        if (checkbox) {
-          checkbox.checked = true; // Select the checkbox
-          console.log("SRT Checkbox clicked");
-        }
-      }, srtCheckbox);
+    //   // Check if the export button was found, then click
+    //   if (exportButton) {
+    //     console.log("Export button found.");
+    //     await exportButton.click();
+    //   } else {
+    //     console.log("Export button not found.");
+    //   }
+    //   await exportButton.dispose();
 
-      // download
-      await page.evaluate(async () => {
-        const elements = document.querySelectorAll(
-          "button.dui-btn.dui-btn-primary"
-        );
-        let downloadButton = null;
-        // Log each button's outerHTML and check for the "Download" button
-        elements.forEach((element) => {
-          if (element.textContent.includes("Download")) {
-            downloadButton = element;
-          }
-        });
-        // Check if we found the download button
-        if (downloadButton) {
-          console.log("Download button found:", downloadButton.outerHTML);
-          downloadButton.click();
-        } else {
-          console.log("Download button not found.");
-        }
+    //   // Wait for the checkbox to be available in the DOM
+    //   const srtCheckbox = await page.waitForSelector(
+    //     'input[name="bool:srt?"]',
+    //     { visible: true }
+    //   );
+    //   // Check if the checkbox was found, then set it as checked inside the evaluate function
+    //   await page.evaluate((checkbox) => {
+    //     if (checkbox) {
+    //       checkbox.checked = true; // Select the checkbox
+    //       console.log("SRT Checkbox clicked");
+    //     }
+    //   }, srtCheckbox);
 
-        await new Promise((resolve) => setTimeout(resolve, 10000)); // testing timeout for downloading
-      });
-      //
-    };
+    //   // download
+    //   await page.evaluate(async () => {
+    //     const elements = document.querySelectorAll(
+    //       "button.dui-btn.dui-btn-primary"
+    //     );
+    //     let downloadButton = null;
+    //     // Log each button's outerHTML and check for the "Download" button
+    //     elements.forEach((element) => {
+    //       if (element.textContent.includes("Download")) {
+    //         downloadButton = element;
+    //       }
+    //     });
+    //     // Check if we found the download button
+    //     if (downloadButton) {
+    //       console.log("Download button found:", downloadButton.outerHTML);
+    //       downloadButton.click();
+    //     } else {
+    //       console.log("Download button not found.");
+    //     }
 
-    // Call the wait function
-    await waitForSVGs(totalFiles);
+    //     await new Promise((resolve) => setTimeout(resolve, 10000)); // testing timeout for downloading
+    //   });
+    //   //
+    // };
+
+    // // Call the wait function
+    // await waitForSVGs(totalFiles);
 
     await browser.close();
   } catch (error) {
     console.log(error);
+    process.exit(1); // Terminate the script if an error occurs
   }
 })();
