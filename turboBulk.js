@@ -1,13 +1,127 @@
+const fs = require("fs");
+const path = require("path");
+const { google } = require("googleapis");
 const puppeteer = require("puppeteer");
 require("dotenv").config();
-const path = require("path");
-const fs = require("fs");
+
+const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
+
+// Load service account credentials from a file
+async function authorize() {
+  try {
+    const key = JSON.parse(fs.readFileSync("key.json")); // Load your service account key file
+    const client = new google.auth.GoogleAuth({
+      credentials: key,
+      scopes: SCOPES,
+    });
+
+    const auth = await client.getClient();
+    return auth;
+  } catch (error) {
+    console.log(error);
+  }
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function listAllFiles(auth, folderId) {
+  const drive = google.drive({ version: "v3", auth });
+  let allFiles = [];
+  let pageToken = null;
+
+  do {
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents`, // No MIME type filter
+      fields: "files(id, name), nextPageToken",
+      pageSize: 100, // Fetch 100 files at a time
+      pageToken: pageToken, // Use pagination token
+    });
+
+    allFiles = allFiles.concat(res.data.files); // Concatenate the new files
+    pageToken = res.data.nextPageToken; // Get the next page token
+
+    // Pause for 2 seconds before the next API call
+    await sleep(2000);
+  } while (pageToken); // Continue fetching until there are no more pages
+
+  // console.log(`Files retrieved from folder ID ${folderId}:`, allFiles);
+  return allFiles;
+}
 
 (async () => {
   try {
+    const auth = await authorize();
+    const folderId = `1hcS1ftRRN_EG7GR92-ft6Y4kmbFik-_l`; // Update with your folder ID
+    const allFiles = await listAllFiles(auth, folderId);
+    console.log("Total Files:", allFiles.length); // Log the total number of files
+
+    // Check file count in transcribedFiles.txt
+    const transcribedFilePath = path.join(__dirname, "transcribedFiles.txt");
+    let fileCount = 0;
+    if (fs.existsSync(transcribedFilePath)) {
+      const transcribedData = fs.readFileSync(transcribedFilePath, "utf-8");
+      fileCount = transcribedData.split("\n").filter(Boolean).length;
+    }
+    console.log("Already Transcribed Files count: " + fileCount);
+
+    // setup for audios and transcribed files
+    const transcribedFilesPath = path.join(__dirname, "transcribedFiles.txt");
+
+    // Read already transcribed files from .txt file
+    let transcribedFiles = [];
+    if (fs.existsSync(transcribedFilesPath)) {
+      transcribedFiles = fs
+        .readFileSync(transcribedFilesPath, "utf-8")
+        .split("\n")
+        .filter(Boolean);
+    }
+
+    // Use the allFiles array from Google Drive
+    const audioFilesToTranscribe = allFiles
+      .filter((file) => !transcribedFiles.includes(file.name)) // Ensure the file name is not transcribed
+      .slice(0, 1); // Choose the number of files, testing only one file at a time
+
+    if (audioFilesToTranscribe.length === 0) {
+      console.log("No new audio files to transcribe.");
+      return;
+    }
+
+    async function downloadFile(auth, fileId, filePath) {
+      try {
+        const drive = google.drive({ version: "v3", auth });
+        const dest = fs.createWriteStream(filePath);
+
+        await new Promise((resolve, reject) => {
+          drive.files
+            .get({ fileId: fileId, alt: "media" }, { responseType: "stream" })
+            .then((res) => {
+              res.data
+                .on("end", () => {
+                  console.log(`Downloaded: ${filePath}`);
+                  resolve();
+                })
+                .on("error", (err) => {
+                  console.error("Error downloading file.", err);
+                  reject(err);
+                })
+                .pipe(dest);
+            });
+        });
+      } catch (error) {
+        console.log(error);
+      }
+    }
+
+    for (const file of audioFilesToTranscribe) {
+      const audioFilePath = path.join(__dirname, "audios", file.name);
+      await downloadFile(auth, file.id, audioFilePath); // Download each file before proceeding
+    }
+
     // Launch a new browser instance
     const browser = await puppeteer.launch({
-      headless: false, //  true if you don't want to see the browser
+      headless: true, // true if you don't want to see the browser
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -40,15 +154,6 @@ const fs = require("fs");
     // Log a message after successful login
     console.log("Logged in successfully!");
 
-    // Check file count in transcribedFiles.txt
-    const transcribedFilePath = path.join(__dirname, "transcribedFiles.txt");
-    let fileCount = 0;
-    if (fs.existsSync(transcribedFilePath)) {
-      const transcribedData = fs.readFileSync(transcribedFilePath, "utf-8");
-      fileCount = transcribedData.split("\n").filter(Boolean).length;
-    }
-    console.log("File count: " + fileCount);
-
     const previousFolderPath = path.join(__dirname, "previousFolder.txt");
     // Check if previousFolder.txt exists and is empty
     let previousFolderUrl = "";
@@ -57,7 +162,7 @@ const fs = require("fs");
     }
 
     // choose number of files after which a new folder will be created
-    if (fileCount % 1000 === 0 || !previousFolderUrl) {
+    if (fileCount % 1000 === 0 || !previousFolderUrl || fileCount === 0) {
       console.log("creating a new folder...");
 
       // Folder number logic
@@ -115,48 +220,24 @@ const fs = require("fs");
       }
     }
 
-    //  setup for audios and transcribed files
-    const transcribedFilesPath = path.join(__dirname, "transcribedFiles.txt");
-    const audiosDir = path.join(__dirname, "audios");
-
-    // Read already transcribed files from .txt file
-    let transcribedFiles = [];
-    if (fs.existsSync(transcribedFilesPath)) {
-      transcribedFiles = fs
-        .readFileSync(transcribedFilesPath, "utf-8")
-        .split("\n")
-        .filter(Boolean);
-    }
-
-    // Fetch audio files and filter out already transcribed ones
-    const allAudioFiles = fs.readdirSync(audiosDir);
-    const audioFilesToTranscribe = allAudioFiles
-      .filter((file) => !transcribedFiles.includes(file))
-      .slice(0, 1); // choose the number of files // testing only one file at a time
-
-    if (audioFilesToTranscribe.length === 0) {
-      console.log("No new audio files to transcribe.");
-      return;
-    }
-
     for (const file of audioFilesToTranscribe) {
-      const filePath = path.join(audiosDir, file);
-
-      // Open the popup
+      const audioFilePath = path.join(__dirname, "audios", file.name); // Use full path for the downloaded file
+      // Open the popup for file upload
       const popupBtn = await page.waitForSelector("span.dui-btn-primary");
       await popupBtn.click();
-      console.log("Opened popup for file:", file);
+      console.log("Opened popup for file:", file.name);
 
       // Select "Urdu" from the dropdown
       await page.waitForSelector('select[name="language"]');
       await page.select('select[name="language"]', "Urdu");
       console.log("Language selected: Urdu");
 
-      // Upload the file
-      await page.waitForSelector('input[type="file"]');
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Upload the file using the full local file path
       const input = await page.$('input[type="file"]');
-      await input.uploadFile(filePath);
-      console.log("File uploaded:", file);
+      await input.uploadFile(audioFilePath);
+      console.log("File uploaded:", file.name);
 
       // Wait for all previously uploaded files to reach completion
       await page.waitForFunction(
@@ -172,7 +253,7 @@ const fs = require("fs");
         { timeout: 7200000 } // for test
       );
 
-      console.log("File fully uploaded and recognized:", file);
+      console.log("File fully uploaded and recognized:", file.name);
 
       await new Promise((resolve) => setTimeout(resolve, 3000));
       // Scroll to the "Transcribe" button to ensure it’s visible
@@ -182,7 +263,7 @@ const fs = require("fs");
 
       // Click the "Transcribe" button
       await page.click("button.dui-btn.dui-btn-primary.w-full");
-      console.log("Clicked 'Transcribe' button for file:", file);
+      console.log("Clicked 'Transcribe' button for file:", file.name);
     }
 
     console.log("All files uploaded and transcribed!");
@@ -192,162 +273,31 @@ const fs = require("fs");
     // Append newly transcribed files to the .txt file
     fs.appendFileSync(
       transcribedFilesPath,
-      audioFilesToTranscribe.join("\n") + "\n"
+      audioFilesToTranscribe.map((file) => file.name).join("\n") + "\n" // Use the name of the files
     );
 
-    // curretnly turboscribe is giving "Try again later"  // you can use this code if you want to download the uploaded files in bulk
-
-    // to download all the uploaded files after they got transcribed
-    // // check all files got transcribed
-    // totalFiles = audioFilesToTranscribe.length;
-    // const timeoutDuration = 7200 * 1000; // 2 hours in milliseconds
-    // let lastChangeTime = Date.now(); // Track the last time a change occurred
-
-    // // Start the MutationObserver to monitor UI changes
-    // await page.evaluate(() => {
-    //   const observer = new MutationObserver(() => {
-    //     // Notify the Node.js context that a change has occurred
-    //     window.lastChangeDetected = true;
-    //   });
-
-    //   // Start observing the <tbody> element for child additions
-    //   const targetNode = document.querySelector("tbody");
-    //   if (targetNode) {
-    //     observer.observe(targetNode, { childList: true, subtree: true });
-    //   }
-    // });
-
-    // // Function to check for inactivity
-    // const checkForInactivity = async () => {
-    //   while (true) {
-    //     await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every second
-
-    //     // Check if enough time has passed without changes
-    //     if (Date.now() - lastChangeTime > timeoutDuration) {
-    //       throw new Error("No UI changes detected within the timeout period.");
-    //     }
-
-    //     // Reset the last change time if a change is detected
-    //     const changeDetected = await page.evaluate(
-    //       () => window.lastChangeDetected
-    //     );
-    //     if (changeDetected) {
-    //       lastChangeTime = Date.now();
-    //       await page.evaluate(() => {
-    //         window.lastChangeDetected = false; // Reset the flag
-    //       });
-    //     }
-    //   }
-    // };
-
-    // // Start the inactivity check in the background
-    // checkForInactivity();
-
-    // // Function to wait for SVGs with dynamic checking
-    // const waitForSVGs = async (totalFiles) => {
-    //   const checkInterval = 5000; // Check every 5 seconds
-    //   let allSVGsFound = false;
-
-    //   while (!allSVGsFound) {
-    //     await new Promise((resolve) => setTimeout(resolve, checkInterval));
-
-    //     const rows = await page.evaluate(() => {
-    //       const rows = Array.from(document.querySelectorAll("tbody tr"));
-    //       return rows.map((row) => {
-    //         const svg = row.querySelector("td:nth-child(6) svg");
-    //         return svg && svg.outerHTML.includes("text-success");
-    //       });
-    //     });
-
-    //     const count = rows.filter(Boolean).length;
-
-    //     console.log(`Current SVG count: ${count}/${totalFiles}`); // Log current count
-    //     if (count === totalFiles) {
-    //       allSVGsFound = true; // Break the loop if all SVGs are found
-    //     }
-    //   }
-
-    //   console.log("All SVGs are found for the processed files."); // Log to Node.js console
-    //   await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    //   // Wait for the checkbox label, then check the checkbox
-    //   await page.evaluate(() => {
-    //     // Select the checkbox using its label
-    //     const checkbox = document.querySelector(
-    //       'thead th label input[type="checkbox"]'
-    //     );
-    //     if (checkbox && !checkbox.checked) {
-    //       checkbox.click(); // Check the checkbox if it's not already checked
-    //       console.log("checkbox clicked");
-    //     }
-    //   });
-
-    //   // Select all div elements with role="link"
-    //   const exportButton = await page.evaluateHandle(() => {
-    //     const linkElements = document.querySelectorAll('div[role="link"]');
-    //     let exportElement = null;
-
-    //     linkElements.forEach((element) => {
-    //       const span = element.querySelector("span");
-    //       if (span && span.textContent.includes("Export")) {
-    //         exportElement = element;
-    //       }
-    //     });
-
-    //     return exportElement; // Return the element to be clicked
-    //   });
-
-    //   // Check if the export button was found, then click
-    //   if (exportButton) {
-    //     console.log("Export button found.");
-    //     await exportButton.click();
-    //   } else {
-    //     console.log("Export button not found.");
-    //   }
-    //   await exportButton.dispose();
-
-    //   // Wait for the checkbox to be available in the DOM
-    //   const srtCheckbox = await page.waitForSelector(
-    //     'input[name="bool:srt?"]',
-    //     { visible: true }
-    //   );
-    //   // Check if the checkbox was found, then set it as checked inside the evaluate function
-    //   await page.evaluate((checkbox) => {
-    //     if (checkbox) {
-    //       checkbox.checked = true; // Select the checkbox
-    //       console.log("SRT Checkbox clicked");
-    //     }
-    //   }, srtCheckbox);
-
-    //   // download
-    //   await page.evaluate(async () => {
-    //     const elements = document.querySelectorAll(
-    //       "button.dui-btn.dui-btn-primary"
-    //     );
-    //     let downloadButton = null;
-    //     // Log each button's outerHTML and check for the "Download" button
-    //     elements.forEach((element) => {
-    //       if (element.textContent.includes("Download")) {
-    //         downloadButton = element;
-    //       }
-    //     });
-    //     // Check if we found the download button
-    //     if (downloadButton) {
-    //       console.log("Download button found:", downloadButton.outerHTML);
-    //       downloadButton.click();
-    //     } else {
-    //       console.log("Download button not found.");
-    //     }
-
-    //     await new Promise((resolve) => setTimeout(resolve, 10000)); // testing timeout for downloading
-    //   });
-    //   //
-    // };
-
-    // // Call the wait function
-    // await waitForSVGs(totalFiles);
-
     await browser.close();
+
+    const audiosDir = path.join(__dirname, "audios");
+
+    // After processing all files
+    fs.readdir(audiosDir, (err, files) => {
+      if (err) {
+        console.error(`Error reading directory: ${audiosDir}`, err);
+        return;
+      }
+      // Delete each file in the audios directory
+      files.forEach((file) => {
+        const filePath = path.join(audiosDir, file);
+        fs.unlink(filePath, (err) => {
+          if (err) {
+            console.error(`Error deleting file: ${filePath}`, err);
+          } else {
+            console.log(`Deleted file: ${filePath}`);
+          }
+        });
+      });
+    });
   } catch (error) {
     console.log(error);
     process.exit(1); // Terminate the script if an error occurs
